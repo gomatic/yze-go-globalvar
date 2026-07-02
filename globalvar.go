@@ -62,7 +62,7 @@ var Registration = goyze.Registration{
 // run reports exported package-level vars at their declaration and watched
 // unexported ones at each non-test reassignment.
 func run(pass *analysis.Pass) (any, error) {
-	allow := buildAllow(allowExtra)
+	allow := buildAllow(allowCSV(allowExtra))
 	watched := packageVars(pass, allow)
 	for _, file := range pass.Files {
 		if !isTestFile(pass, file) {
@@ -72,8 +72,12 @@ func run(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
+// allowCSV is the raw comma-separated -allow flag value listing extra
+// permitted package-level var names.
+type allowCSV string
+
 // buildAllow merges the baked-in allow-set with the configured extras.
-func buildAllow(extra string) map[string]bool {
+func buildAllow(extra allowCSV) map[string]bool {
 	allow := make(map[string]bool, len(defaultAllow))
 	for name := range defaultAllow {
 		allow[name] = true
@@ -84,11 +88,11 @@ func buildAllow(extra string) map[string]bool {
 	return allow
 }
 
-func splitNonEmpty(value string) []string {
+func splitNonEmpty(value allowCSV) []string {
 	if value == "" {
 		return nil
 	}
-	return strings.Split(value, ",")
+	return strings.Split(string(value), ",")
 }
 
 // packageVars reports exported non-allow-listed package-level vars and returns
