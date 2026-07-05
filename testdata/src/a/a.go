@@ -48,3 +48,39 @@ func shadow() {
 	local := 3
 	_ = local
 }
+
+// rangeAssign rebinds package state through a range clause with Tok ==
+// token.ASSIGN — each rebound key/value expression is flagged.
+func rangeAssign() {
+	for counter = range 3 { // want `reassigned outside tests`
+	}
+	for counter, length = range []int{1} { // want `reassigned outside tests` `reassigned outside tests`
+	}
+	for _, length = range []int{1} { // want `reassigned outside tests`
+	}
+}
+
+// rangeDefine declares new (shadowing) locals via := — it rebinds no package
+// state and must NOT be flagged.
+func rangeDefine() {
+	for counter := range 3 {
+		_ = counter
+	}
+	for range 3 {
+	}
+}
+
+// parenthesized rebinds package state through parenthesized targets — the
+// parens are unwrapped, so each rebinding is flagged.
+func parenthesized() {
+	(counter) = 5 // want `reassigned outside tests`
+	(counter)++   // want `reassigned outside tests`
+}
+
+// pointerAlias mutates counter through a pointer alias. The analyzer does no
+// escape analysis — mutation through a pointer is deliberately out of scope —
+// so this must NOT be flagged. This pins the documented contract.
+func pointerAlias() {
+	p := &counter
+	*p = 7
+}

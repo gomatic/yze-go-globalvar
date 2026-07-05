@@ -6,6 +6,14 @@
 // tests is either an immutable binding (a value Go cannot express as a const —
 // a lookup table, a func value, a //go:embed FS) or a dependency-injection seam
 // reassigned only by the package's tests; both are sanctioned gomatic patterns.
+//
+// Test files (_test.go) are exempt from both checks: reassignment there is the
+// sanctioned dependency-injection seam, and an exported var declared in a test
+// file (the export_test.go seam) is not importable, so the export rationale
+// does not apply. An allow-listed name (version, Analyzer, Registration, or a
+// -allow extra) is exempt from both the export check and the reassignment
+// watch. Mutation through a pointer alias (p := &v; *p = x) is deliberately
+// out of scope: the analyzer tracks assignment targets, not escape analysis.
 package globalvar
 
 import (
@@ -24,9 +32,11 @@ const (
 	reassignedMessage = "package-level var %q is reassigned outside tests; package state must be immutable (inject the dependency instead)"
 )
 
-// defaultAllow is the baked-in set of sanctioned exported package-level var
-// names that are standard across the gomatic ecosystem (an analyzer's exported
-// Analyzer and Registration, and the version stamped via -ldflags).
+// defaultAllow is the baked-in set of sanctioned package-level var names that
+// are standard across the gomatic ecosystem (an analyzer's exported Analyzer
+// and Registration, and the version stamped via -ldflags). An allow-listed
+// name is exempt from BOTH checks: it may be exported AND it may be reassigned
+// outside tests (it is never added to the watch set).
 var defaultAllow = map[string]bool{
 	"version":      true,
 	"Analyzer":     true,
@@ -97,9 +107,15 @@ func splitNonEmpty(value allowCSV) []string {
 
 // packageVars reports exported non-allow-listed package-level vars and returns
 // the set of unexported package-level var objects to watch for reassignment.
+// Test files are skipped entirely: an exported var there (the export_test.go
+// seam) is not importable, and an unexported var there is test-only state that
+// production code cannot reference.
 func packageVars(pass *analysis.Pass, allow map[string]bool) map[types.Object]bool {
 	watched := make(map[types.Object]bool)
 	for _, file := range pass.Files {
+		if isTestFile(pass, file) {
+			continue
+		}
 		for _, decl := range file.Decls {
 			collectDecl(pass, allow, decl, watched)
 		}
@@ -143,7 +159,8 @@ func isTestFile(pass *analysis.Pass, file *ast.File) bool {
 }
 
 // checkReassignments reports each rebinding of a watched var in file: plain and
-// compound assignments, and increment/decrement statements.
+// compound assignments, increment/decrement statements, and range clauses that
+// assign (for v = range ...).
 func checkReassignments(pass *analysis.Pass, watched map[types.Object]bool, file *ast.File) {
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch stmt := n.(type) {
@@ -153,17 +170,36 @@ func checkReassignments(pass *analysis.Pass, watched map[types.Object]bool, file
 			}
 		case *ast.IncDecStmt:
 			reportTargets(pass, watched, []ast.Expr{stmt.X})
+		case *ast.RangeStmt:
+			reportTargets(pass, watched, rangeTargets(stmt))
 		}
 		return true
 	})
 }
 
+// rangeTargets returns the assignment targets of a range clause that rebinds
+// existing variables (Tok == token.ASSIGN). A := clause declares new
+// (shadowing) locals and a bare `for range` binds nothing, so both yield nil.
+func rangeTargets(stmt *ast.RangeStmt) []ast.Expr {
+	if stmt.Tok != token.ASSIGN {
+		return nil
+	}
+	targets := make([]ast.Expr, 0, 2)
+	if stmt.Key != nil {
+		targets = append(targets, stmt.Key)
+	}
+	if stmt.Value != nil {
+		targets = append(targets, stmt.Value)
+	}
+	return targets
+}
+
 // reportTargets reports each assignment target that names a watched
-// package-level var. A shadowing local resolves to a different object, so it is
-// not reported.
+// package-level var, unwrapping any parentheses ((v) = x rebinds v). A
+// shadowing local resolves to a different object, so it is not reported.
 func reportTargets(pass *analysis.Pass, watched map[types.Object]bool, targets []ast.Expr) {
 	for _, target := range targets {
-		if ident, ok := target.(*ast.Ident); ok && watched[pass.TypesInfo.ObjectOf(ident)] {
+		if ident, ok := ast.Unparen(target).(*ast.Ident); ok && watched[pass.TypesInfo.ObjectOf(ident)] {
 			pass.Reportf(ident.Pos(), reassignedMessage, ident.Name)
 		}
 	}
