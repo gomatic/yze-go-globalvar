@@ -31,13 +31,14 @@
 // Registration, or a -allow extra) is exempt from both the export check and the
 // write watch.
 //
-// Two kinds of write are deliberately out of scope. The first is a write that
-// reaches package state through something other than the var: a pointer alias
-// (p := &v; *p = x), a local copy of a reference type (m := v; m[k] = x), and
-// any function handed the var or its address. The analyzer resolves the
+// Two kinds of write are deliberately out of scope. The first is a write whose
+// target is not rooted at the var's own name: a pointer alias (p := &v; *p = x)
+// and its one-line spelling ((&v).f = x), a local copy of a reference type
+// (m := v; m[k] = x), a value received from a package channel ((<-v).f = x),
+// and any function handed the var or its address. The analyzer resolves the
 // identifier an assignment target is rooted at; it performs no escape or alias
-// analysis, so a write whose target is rooted at a local is attributed to that
-// local and reported nowhere.
+// analysis, so a write whose target is rooted at anything but the var — a
+// local, an expression, a call — is not attributed to the var.
 //
 // The second is a write performed by USING the value rather than by naming a
 // target: a method call, whatever its receiver does (v.bump(), mu.Lock()), and

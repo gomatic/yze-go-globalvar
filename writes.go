@@ -90,10 +90,17 @@ func assignmentMessage(target ast.Expr) string {
 func mutationMessage(ast.Expr) string { return mutatedMessage }
 
 // rootIdent returns the identifier an assignment target is rooted at, or nil
-// when the target is rooted at no identifier (f().x = 1). Indexing, field
-// selection and dereference all write into the state reached from their base,
-// so the base is what the write is attributed to; a shadowing local resolves to
-// a different object, so it is not reported.
+// when the target is rooted at no identifier. Indexing, field selection and
+// dereference all write into the state reached from their base, so the base is
+// what the write is attributed to; a shadowing local resolves to a different
+// object, so it is not reported.
+//
+// A target rooted at anything else yields nil and is not reported: a call
+// (f().x = 1), and a unary expression — an inline address-of ((&v).f = 1) or a
+// channel receive ((<-ch).f = 1). The address-of is the pointer-alias
+// limitation written on one line instead of two, and stops here for the same
+// reason: what this resolves is the identifier a target is ROOTED at, and &v is
+// not that identifier.
 func rootIdent(target ast.Expr) *ast.Ident {
 	switch expr := ast.Unparen(target).(type) {
 	case *ast.Ident:

@@ -92,6 +92,7 @@ func pointerAlias() {
 // outside tests, so every such write is flagged at the var it reaches.
 type config struct {
 	n     int
+	p     *int
 	inner struct{ n int }
 }
 
@@ -206,6 +207,23 @@ func shadowWrite() {
 	delete(local, "a")
 	clear(local)
 }
+
+// unaryWrite writes through the package var's own address taken inline, and
+// through a pointer received from a package channel. Neither target is rooted
+// at an identifier — (&settings) and (<-inbox) are expressions, not names — so
+// both are out of scope and must NOT be flagged. The address-of form is the
+// pointer-alias limitation aliasWrite pins, written on one line instead of two;
+// the receive is a read of the channel that no reading of the rule should turn
+// into a write of it. Both sit beside writeThrough's in-scope siblings, which
+// ARE flagged, so the silence is never mistaken for the analyzer being broken.
+func unaryWrite() {
+	(&settings).n = 4
+	*(&settings).p = 5
+	*(&window[0]) = 6
+	(<-inbox).n = 7
+}
+
+var inbox = make(chan *config, 1)
 
 // rootlessWrite writes into a struct returned by a call. The target is rooted
 // at no identifier at all, so there is nothing to resolve and nothing to flag.
