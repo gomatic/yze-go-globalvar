@@ -1,7 +1,7 @@
 package a
 
 // Mutable is exported: any importer can rebind it, so it is flagged at the declaration.
-var Mutable = 1 // want `exported package-level var`
+var Mutable = 1 // want `exported package-level var "Mutable"`
 
 // version is allow-listed (the standard -ldflags stamp) and must NOT be flagged.
 var version = "dev"
@@ -34,9 +34,9 @@ const c = 5
 
 // mutate rebinds package state outside tests — every form is flagged.
 func mutate() {
-	counter++    // want `reassigned outside tests`
-	length += 1  // want `reassigned outside tests`
-	counter = 2  // want `reassigned outside tests`
+	counter++    // want `var "counter" is reassigned`
+	length += 1  // want `var "length" is reassigned`
+	counter = 2  // want `var "counter" is reassigned`
 	version = "" // allow-listed, not flagged
 }
 
@@ -53,11 +53,11 @@ func shadow() {
 // rangeAssign rebinds package state through a range clause with Tok ==
 // token.ASSIGN — each rebound key/value expression is flagged.
 func rangeAssign() {
-	for counter = range 3 { // want `reassigned outside tests`
+	for counter = range 3 { // want `var "counter" is reassigned`
 	}
-	for counter, length = range []int{1} { // want `reassigned outside tests` `reassigned outside tests`
+	for counter, length = range []int{1} { // want `var "counter" is reassigned` `var "length" is reassigned`
 	}
-	for _, length = range []int{1} { // want `reassigned outside tests`
+	for _, length = range []int{1} { // want `var "length" is reassigned`
 	}
 }
 
@@ -74,8 +74,8 @@ func rangeDefine() {
 // parenthesized rebinds package state through parenthesized targets — the
 // parens are unwrapped, so each rebinding is flagged.
 func parenthesized() {
-	(counter) = 5 // want `reassigned outside tests`
-	(counter)++   // want `reassigned outside tests`
+	(counter) = 5 // want `var "counter" is reassigned`
+	(counter)++   // want `var "counter" is reassigned`
 }
 
 // pointerAlias mutates counter through a pointer alias. The analyzer does no
@@ -109,16 +109,16 @@ var (
 // dereference, a compound assignment and an increment. Each is an assignment
 // target rooted at a watched var, so each is flagged.
 func writeThrough() {
-	store["a"] = 2             // want `mutated outside tests`
-	store["a"] += 1            // want `mutated outside tests`
-	window[0] = 9              // want `mutated outside tests`
-	matrix[0][0] = 9           // want `mutated outside tests`
-	settings.n = 7             // want `mutated outside tests`
-	settings.n++               // want `mutated outside tests`
-	settings.inner.n = 1       // want `mutated outside tests`
-	*slot = 3                  // want `mutated outside tests`
-	(store)["a"] = 4           // want `mutated outside tests`
-	for settings.n = range 3 { // want `mutated outside tests`
+	store["a"] = 2             // want `var "store" is mutated`
+	store["a"] += 1            // want `var "store" is mutated`
+	window[0] = 9              // want `var "window" is mutated`
+	matrix[0][0] = 9           // want `var "matrix" is mutated`
+	settings.n = 7             // want `var "settings" is mutated`
+	settings.n++               // want `var "settings" is mutated`
+	settings.inner.n = 1       // want `var "settings" is mutated`
+	*slot = 3                  // want `var "slot" is mutated`
+	(store)["a"] = 4           // want `var "store" is mutated`
+	for settings.n = range 3 { // want `var "settings" is mutated`
 	}
 }
 
@@ -126,11 +126,11 @@ func writeThrough() {
 // builtins that write into their first argument. Each is flagged at that
 // argument; a later argument is read, not written, so it is not flagged.
 func builtinWrites() {
-	delete(store, "a")  // want `mutated outside tests`
-	clear(store)        // want `mutated outside tests`
-	clear(window)       // want `mutated outside tests`
-	copy(window, spare) // want `mutated outside tests`
-	delete(store, key)  // want `mutated outside tests`
+	delete(store, "a")  // want `var "store" is mutated`
+	clear(store)        // want `var "store" is mutated`
+	clear(window)       // want `var "window" is mutated`
+	copy(window, spare) // want `var "window" is mutated`
+	delete(store, key)  // want `var "store" is mutated`
 }
 
 // key and spare are watched package vars passed to a builtin as a LATER
@@ -208,22 +208,67 @@ func shadowWrite() {
 	clear(local)
 }
 
-// unaryWrite writes through the package var's own address taken inline, and
-// through a pointer received from a package channel. Neither target is rooted
-// at an identifier — (&settings) and (<-inbox) are expressions, not names — so
-// both are out of scope and must NOT be flagged. The address-of form is the
-// pointer-alias limitation aliasWrite pins, written on one line instead of two;
-// the receive is a read of the channel that no reading of the rule should turn
-// into a write of it. Both sit beside writeThrough's in-scope siblings, which
-// ARE flagged, so the silence is never mistaken for the analyzer being broken.
-func unaryWrite() {
-	(&settings).n = 4
-	*(&settings).p = 5
-	*(&window[0]) = 6
+// addressOfWrite writes through the package var's OWN address, taken inline.
+// Nothing is stored and nothing escapes: (&settings).n = 4 IS settings.n = 4
+// with two characters added, so it is flagged exactly as writeThrough's
+// settings.n = 7 is. Leaving it silent would let a pair of parentheses defeat
+// the rule, and the pointer-alias limitation aliasWrite pins is about an alias
+// that outlives the expression, not about the address-of operator.
+func addressOfWrite() {
+	(&settings).n = 4  // want `var "settings" is mutated`
+	*(&settings).p = 5 // want `var "settings" is mutated`
+	*(&window[0]) = 6  // want `var "window" is mutated`
+}
+
+// receiveWrite writes into a pointer RECEIVED from a package channel. The
+// receive reads the channel and yields a value that was already elsewhere; the
+// write lands on that value, not on the channel's storage. Reporting inbox here
+// would be reporting a read, so this must NOT be flagged — beside
+// addressOfWrite, whose unary expressions ARE flagged.
+func receiveWrite() {
 	(<-inbox).n = 7
 }
 
 var inbox = make(chan *config, 1)
+
+// sliceWrite writes into package state reached through a slice expression: the
+// only way to copy into an array-typed var, and the ordinary spelling of a
+// partial write. A slice expression names the same storage its operand does, so
+// each of these is flagged at the var — otherwise copy(window, spare) two
+// screens up could be silenced forever by writing copy(window[:], spare).
+func sliceWrite() {
+	copy(window[2:], spare)   // want `var "window" is mutated`
+	clear(window[1:])         // want `var "window" is mutated`
+	copy(block[:], spare)     // want `var "block" is mutated`
+	window[1:][0] = 9         // want `var "window" is mutated`
+	block[:][0] = 9           // want `var "block" is mutated`
+	copy(matrix[0][:], spare) // want `var "matrix" is mutated`
+}
+
+var block [4]int
+
+// assertWrite writes through the dynamic value of an interface-typed package
+// var. A type assertion names what the var holds, exactly as a dereference
+// does, so the write is attributed to the var it came out of.
+func assertWrite() {
+	held.(*config).n = 1           // want `var "held" is mutated`
+	held.(map[string]int)["a"] = 2 // want `var "held" is mutated`
+}
+
+var held any = &config{}
+
+// sliceRead and assertRead only READ through the same expressions, and must NOT
+// be flagged — the boundary the two write cases above sit against.
+func sliceRead() {
+	_ = window[1:]
+	_ = block[:]
+	_ = copy([]int{0}, window[1:])
+	_ = held.(*config).n
+	_ = (&settings).n
+	(<-mapbox)["a"] = 1
+}
+
+var mapbox = make(chan map[string]int, 1)
 
 // rootlessWrite writes into a struct returned by a call. The target is rooted
 // at no identifier at all, so there is nothing to resolve and nothing to flag.

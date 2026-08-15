@@ -69,6 +69,62 @@ func TestPackageVarsSkipsTestFilesEntirely(t *testing.T) {
 		"a package of nothing but test files watches nothing")
 }
 
+// TestAddressedIdentTellsAnAddressOfFromEveryOtherUnaryExpression names
+// addressedIdent's claim. Go's unary operators are not separable by shape, and
+// the operator token cannot be compared without discriminating a 90-member
+// const group, so the discriminator is the TYPE: an address-of is exactly the
+// unary operation whose result is a pointer to its own operand's type. Wrong in
+// one direction the analyzer misses (&v).f = x, the two-character evasion of
+// v.f = x; wrong in the other it reports a channel a receive only read. The
+// corpus proves both ends through the analyzer; this proves the discriminator
+// itself, including the case no corpus fixture can distinguish — a receive
+// whose result is a pointer, where the shape matches and only the type does
+// not.
+func TestAddressedIdentTellsAnAddressOfFromEveryOtherUnaryExpression(t *testing.T) {
+	t.Parallel()
+
+	pass := checkedPass(t, map[string]string{
+		"source.go": `package p
+
+type s struct{ n int }
+
+var (
+	v     s
+	ptrCh = make(chan *s, 1)
+	mapCh = make(chan map[string]int, 1)
+	n     = 1
+)
+
+func f() {
+	_ = &v
+	_ = <-ptrCh
+	_ = <-mapCh
+	_ = -n
+}
+`,
+	})
+
+	unary := make([]*ast.UnaryExpr, 0, 4)
+	ast.Inspect(pass.Files[0], func(node ast.Node) bool {
+		if expr, ok := node.(*ast.UnaryExpr); ok {
+			unary = append(unary, expr)
+		}
+		return true
+	})
+	require.Len(t, unary, 4, "the fixture holds &v, <-ptrCh, <-mapCh and -n, in that order")
+
+	addressed := addressedIdent(pass, unary[0])
+	require.NotNil(t, addressed, "&v takes v's address, so the write is v's")
+	assert.Equal(t, "v", addressed.Name)
+
+	assert.Nil(t, addressedIdent(pass, unary[1]),
+		"<-ptrCh yields a pointer that was already elsewhere; writing through it does not write ptrCh")
+	assert.Nil(t, addressedIdent(pass, unary[2]),
+		"<-mapCh yields a map, not a pointer at all")
+	assert.Nil(t, addressedIdent(pass, unary[3]),
+		"-n yields a new value, and no write can be rooted at it")
+}
+
 // checkedPass type-checks the named fixture sources into one package and
 // returns a pass carrying their syntax and types. collectDecl reads TypesInfo,
 // so a real type-check is required rather than a synthetic AST.
@@ -82,7 +138,11 @@ func checkedPass(t *testing.T, sources map[string]string) *analysis.Pass {
 		require.NoError(t, err)
 		files = append(files, file)
 	}
-	info := &types.Info{Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}}
+	info := &types.Info{
+		Defs:  map[*ast.Ident]types.Object{},
+		Uses:  map[*ast.Ident]types.Object{},
+		Types: map[ast.Expr]types.TypeAndValue{},
+	}
 	conf := types.Config{Importer: importer.Default()}
 	pkg, err := conf.Check("example.test/p", fset, files, info)
 	require.NoError(t, err)

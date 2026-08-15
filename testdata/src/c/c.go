@@ -28,5 +28,5 @@ func shadowedCalls() {
 // is flagged. Without it this package would be silent for the wrong reason and
 // would pass against an analyzer that had stopped watching store altogether.
 func realWrite() {
-	store["a"] = 1 // want `mutated outside tests`
+	store["a"] = 1 // want `var "store" is mutated`
 }

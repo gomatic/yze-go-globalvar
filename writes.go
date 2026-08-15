@@ -65,7 +65,7 @@ func reportTargets(pass *analysis.Pass, watched map[types.Object]bool, targets [
 // at the var it reaches, with the message describe chooses for it.
 func reportWrites(pass *analysis.Pass, watched map[types.Object]bool, targets []ast.Expr, describe writeMessage) {
 	for _, target := range targets {
-		root := rootIdent(target)
+		root := rootIdent(pass, target)
 		if root != nil && watched[pass.TypesInfo.ObjectOf(root)] {
 			pass.Reportf(root.Pos(), describe(target), root.Name)
 		}
@@ -90,29 +90,54 @@ func assignmentMessage(target ast.Expr) string {
 func mutationMessage(ast.Expr) string { return mutatedMessage }
 
 // rootIdent returns the identifier an assignment target is rooted at, or nil
-// when the target is rooted at no identifier. Indexing, field selection and
-// dereference all write into the state reached from their base, so the base is
-// what the write is attributed to; a shadowing local resolves to a different
-// object, so it is not reported.
+// when the target is rooted at no identifier. Indexing, slicing, field
+// selection, dereference, type assertion and an inline address-of each name
+// storage reached from their operand rather than a new value, so the operand is
+// what the write is attributed to and the walk continues into it. A shadowing
+// local resolves to a different object, so it is not reported.
 //
-// A target rooted at anything else yields nil and is not reported: a call
-// (f().x = 1), and a unary expression — an inline address-of ((&v).f = 1) or a
-// channel receive ((<-ch).f = 1). The address-of is the pointer-alias
-// limitation written on one line instead of two, and stops here for the same
-// reason: what this resolves is the identifier a target is ROOTED at, and &v is
-// not that identifier.
-func rootIdent(target ast.Expr) *ast.Ident {
+// Slicing is here because it is the ONLY way to write into an array-typed var
+// (copy(v[:], src)) and the ordinary spelling of a partial write, and because
+// without it copy(v[:], src) would silence copy(v, src) with two characters.
+// The address-of is here for the same reason: (&v).f = x is v.f = x, and a
+// limitation a pair of parentheses can invoke is not a limitation.
+//
+// A target rooted at anything else yields nil: a call (f().x = 1), and a unary
+// expression that is not an address-of — most importantly a channel receive
+// ((<-ch).f = 1), which writes the value the receive produced, so reporting ch
+// would be reporting a read of it.
+func rootIdent(pass *analysis.Pass, target ast.Expr) *ast.Ident {
 	switch expr := ast.Unparen(target).(type) {
 	case *ast.Ident:
 		return expr
 	case *ast.IndexExpr:
-		return rootIdent(expr.X)
+		return rootIdent(pass, expr.X)
+	case *ast.SliceExpr:
+		return rootIdent(pass, expr.X)
 	case *ast.SelectorExpr:
-		return rootIdent(expr.X)
+		return rootIdent(pass, expr.X)
 	case *ast.StarExpr:
-		return rootIdent(expr.X)
+		return rootIdent(pass, expr.X)
+	case *ast.TypeAssertExpr:
+		return rootIdent(pass, expr.X)
+	case *ast.UnaryExpr:
+		return addressedIdent(pass, expr)
 	}
 	return nil
+}
+
+// addressedIdent returns the identifier whose address expr takes, or nil when
+// expr is any other unary expression. Go's unary operators are not separable by
+// shape and the operator token cannot be compared without discriminating a
+// 90-member const group, so the type checker is asked instead: taking an
+// address is exactly the operation whose result is a pointer to its OWN
+// operand's type, which no other unary operator produces.
+func addressedIdent(pass *analysis.Pass, expr *ast.UnaryExpr) *ast.Ident {
+	pointer, isPointer := pass.TypesInfo.TypeOf(expr).(*types.Pointer)
+	if !isPointer || !types.Identical(pointer.Elem(), pass.TypesInfo.TypeOf(expr.X)) {
+		return nil
+	}
+	return rootIdent(pass, expr.X)
 }
 
 // mutatingBuiltins are the predeclared functions that write into the container

@@ -5,15 +5,17 @@
 // write to it in non-test code.
 //
 // A write is either a rebinding of the name (v = x, v++, for v = range ...) or
-// a write THROUGH the name into the state it holds: an index, field or
-// dereference assignment target rooted at the var (v[k] = x, v.f = x, *v = x,
-// and any nesting of those), and a call to one of the builtins that writes into
-// the container it is given (delete(v, k), clear(v), copy(v, src)). append is
-// not one: it returns the result rather than writing into its argument, so a
-// package var grown by append is caught as the rebinding it must perform.
-// Rebinding and writing through are reported with different messages because
-// the remedy differs — one replaces the binding, the other mutates shared state
-// the binding merely names.
+// a write THROUGH the name into the state it holds: an assignment target rooted
+// at the var by indexing, slicing, field selection, dereference, type assertion
+// or an inline address-of (v[k] = x, v[i:][j] = x, v.f = x, *v = x,
+// v.(*T).f = x, (&v).f = x, and any nesting of those), and a call to one of the
+// builtins that writes into the container it is given (delete(v, k), clear(v),
+// copy(v, src), including through a slice — copy(v[:], src) is the only way to
+// write into an array-typed var). append is not one: it returns the result
+// rather than writing into its argument, so a package var grown by append is
+// caught as the rebinding it must perform. Rebinding and writing through are
+// reported with different messages because the remedy differs — one replaces
+// the binding, the other mutates shared state the binding merely names.
 //
 // An unexported var never written to outside tests is either an immutable
 // binding (a value Go cannot express as a const — a lookup table that is only
@@ -32,13 +34,16 @@
 // write watch.
 //
 // Two kinds of write are deliberately out of scope. The first is a write whose
-// target is not rooted at the var's own name: a pointer alias (p := &v; *p = x)
-// and its one-line spelling ((&v).f = x), a local copy of a reference type
-// (m := v; m[k] = x), a value received from a package channel ((<-v).f = x),
+// target is not rooted at the var's own name: a stored pointer alias (p := &v;
+// *p = x), a local copy of a reference type (m := v; m[k] = x), a value
+// received from a package channel ((<-v).f = x, which writes what the receive
+// produced rather than the channel), a value returned by a call (f().x = x),
 // and any function handed the var or its address. The analyzer resolves the
 // identifier an assignment target is rooted at; it performs no escape or alias
-// analysis, so a write whose target is rooted at anything but the var — a
-// local, an expression, a call — is not attributed to the var.
+// analysis, so a write rooted at a local, a call or a received value is not
+// attributed to the var. A ONE-LINE address-of is not in this set — (&v).f = x
+// stores no alias and is reported, because a limitation a pair of parentheses
+// can invoke is not a limitation.
 //
 // The second is a write performed by USING the value rather than by naming a
 // target: a method call, whatever its receiver does (v.bump(), mu.Lock()), and
